@@ -1,0 +1,42 @@
+# ARM64 base with PyTorch pre-built for Jetson (JetPack 6 / L4T R36.4)
+FROM dustynv/pytorch:2.6-r36.4.0-cu128
+
+WORKDIR /opt/sam2
+
+# Override Jetson pip index (pypi.jetson-ai-lab.dev doesn't resolve during build)
+ENV PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_EXTRA_INDEX_URL=""
+
+# Build tools + ffmpeg for video support
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake g++ ninja-build \
+    ffmpeg libavutil-dev libavcodec-dev libavformat-dev libswscale-dev \
+    pkg-config build-essential libffi-dev \
+    libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip setuptools
+
+# SAM 2 source
+COPY setup.py pyproject.toml README.md ./
+COPY sam2/ ./sam2/
+
+# Build CUDA extension for Jetson Orin (Ampere, compute 8.7)
+ENV TORCH_CUDA_ARCH_LIST="8.7"
+ENV SAM2_BUILD_CUDA=1
+ENV SAM2_BUILD_ALLOW_ERRORS=1
+ENV CUDA_HOME=/usr/local/cuda
+
+RUN pip install --no-cache-dir -e .
+
+# opencv for image pre/post-processing
+RUN pip install --no-cache-dir opencv-python-headless numpy pillow
+
+# Checkpoints are mounted from host at runtime:
+#   -v ~/models/sam2:/opt/sam2/checkpoints
+# Download once on host: cd sam2/checkpoints && bash download_ckpts.sh
+ENV SAM2_REPO_ROOT=/opt/sam2
+ENV PYTHONPATH=/opt/sam2
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python3"]
