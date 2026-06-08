@@ -25,8 +25,8 @@ ENV CUDA_HOME=/usr/local/cuda
 
 RUN pip install --no-cache-dir -e .
 
-# opencv for image pre/post-processing
-RUN pip install --no-cache-dir opencv-python-headless numpy pillow
+# runtime deps for pipeline
+RUN pip install --no-cache-dir opencv-python-headless numpy pillow matplotlib
 
 # Checkpoints are mounted from host at runtime:
 #   -v ~/models/sam2:/opt/sam2/checkpoints
