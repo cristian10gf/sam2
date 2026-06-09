@@ -130,6 +130,11 @@ def main():
     main_out = save_isolated(image_np, best['segmentation'], args.output, args.name)
     print(f"Main object:   {main_out}  (area={best['area']} px²)")
 
+    # Full-size binary mask (bool, original image dimensions) for depth masking
+    segmask_out = args.output / f'{args.name}_segmask.npy'
+    np.save(str(segmask_out), best['segmentation'].astype(np.uint8))
+    print(f"Segmask:       {segmask_out}")
+
     # All masks individually
     if args.all_masks:
         ranked = sorted(masks, key=lambda x: x['area'], reverse=True)
