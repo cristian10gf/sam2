@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade pip setuptools
 
 # SAM 2 source
-COPY setup.py pyproject.toml README.md ./
+COPY setup.py pyproject.toml README.md pipeline.py ./
 COPY sam2/ ./sam2/
 
 # Build CUDA extension for common x86 GPU archs
