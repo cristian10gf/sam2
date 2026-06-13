@@ -1,36 +1,63 @@
 # x86_64 + NVIDIA GPU (CUDA 12.1, driver >= 525) — RTX 4000 Ada / Ampere / Turing
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel
+# Two-stage build: devel to compile sam2._C CUDA extension, runtime for final image.
+# Saves ~4-5 GB by excluding nvcc, CUDA headers, and build tools from runtime.
+# Note: ffmpeg excluded — pipeline uses image mode only. Add back if video support needed:
+#   apt-get install -y ffmpeg libavutil-dev libavcodec-dev libavformat-dev libswscale-dev
 
-WORKDIR /opt/sam2
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 1 — builder: compile sam2._C CUDA extension + all Python deps
+# ══════════════════════════════════════════════════════════════════════════════
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel AS builder
 
-# Build tools + ffmpeg for video support
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake g++ ninja-build \
-    ffmpeg libavutil-dev libavcodec-dev libavformat-dev libswscale-dev \
-    pkg-config build-essential libffi-dev \
-    libgl1 libglib2.0-0 \
+        cmake g++ ninja-build build-essential libffi-dev pkg-config \
+        libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --upgrade pip setuptools
 
-# SAM 2 source
+# SAM 2 source — COPY before install for layer-cache efficiency
 COPY setup.py pyproject.toml README.md pipeline.py ./
 COPY sam2/ ./sam2/
 
-# Build CUDA extension for common x86 GPU archs
 ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0"
 ENV SAM2_BUILD_CUDA=1
 ENV SAM2_BUILD_ALLOW_ERRORS=1
 ENV CUDA_HOME=/usr/local/cuda
 
-RUN pip install --no-cache-dir -e .
+# Non-editable install: compiled sam2._C.so lands in site-packages (not source dir),
+# so the runtime stage only needs /opt/conda, not the full source tree.
+RUN pip install --no-cache-dir .
 
-# runtime deps for pipeline
-RUN pip install --no-cache-dir opencv-python-headless numpy pillow matplotlib
+# Runtime inference deps
+RUN pip install --no-cache-dir \
+        opencv-python-headless numpy pillow matplotlib && \
+    rm -rf /root/.cache/pip /tmp/pip-*
 
-# Checkpoints are mounted from host at runtime:
-#   -v ~/models/sam2:/opt/sam2/checkpoints
-# Download once on host: cd sam2/checkpoints && bash download_ckpts.sh
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 2 — runtime: CUDA runtime only, no nvcc/headers/build tools
+# ══════════════════════════════════════════════════════════════════════════════
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+
+WORKDIR /opt/sam2
+
+# Only GL libs needed — no build tools, no ffmpeg dev headers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Full Python env from builder — includes installed sam2 package + compiled _C.so
+COPY --from=builder /opt/conda /opt/conda
+
+# pip install . (wheel build) skips MANIFEST.in — configs not copied to site-packages.
+# Copy them explicitly so Hydra can find configs/sam2.1/sam2.1_hiera_s.yaml via pkg://sam2.
+COPY --from=builder /workspace/sam2/configs /opt/conda/lib/python3.11/site-packages/sam2/configs
+
+# pipeline.py is mounted at runtime by orchestrators (tools/pipeline.py, tools/run_numcc.py)
+# but include a copy here for standalone use without volume mount
+COPY pipeline.py ./
+
+# Checkpoints mounted from host: -v ~/models/sam2:/opt/sam2/checkpoints:ro
 ENV SAM2_REPO_ROOT=/opt/sam2
 ENV PYTHONPATH=/opt/sam2
 ENV PYTHONUNBUFFERED=1
