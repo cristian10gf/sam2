@@ -25,8 +25,12 @@ def load_model(device: str = 'cuda'):
 
 
 def segment(sam2, image_np: np.ndarray) -> list[dict]:
+    """Segment all objects using a reduced point grid (8×8=64 vs default 32×32=1024).
+    16× fewer prompts than default AMG while preserving whole-object detection.
+    Single-point SAM2ImagePredictor fails on hollow objects (center lands inside cavity).
+    """
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-    gen = SAM2AutomaticMaskGenerator(sam2)
+    gen = SAM2AutomaticMaskGenerator(sam2, points_per_side=8)
     return gen.generate(image_np)
 
 
