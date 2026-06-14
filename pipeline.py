@@ -17,10 +17,17 @@ from PIL import Image
 sys.path.insert(0, '/opt/sam2')
 
 
-def load_model(device: str = 'cuda'):
+MODELS = {
+    'tiny':      ('sam2.1_hiera_tiny.pt',      'configs/sam2.1/sam2.1_hiera_t.yaml'),
+    'small':     ('sam2.1_hiera_small.pt',     'configs/sam2.1/sam2.1_hiera_s.yaml'),
+    'base_plus': ('sam2.1_hiera_base_plus.pt', 'configs/sam2.1/sam2.1_hiera_b+.yaml'),
+}
+
+
+def load_model(model: str = 'small', device: str = 'cuda'):
     from sam2.build_sam import build_sam2
-    ckpt = '/opt/sam2/checkpoints/sam2.1_hiera_small.pt'
-    cfg  = 'configs/sam2.1/sam2.1_hiera_s.yaml'
+    ckpt_name, cfg = MODELS[model]
+    ckpt = f'/opt/sam2/checkpoints/{ckpt_name}'
     return build_sam2(cfg, ckpt, device=device)
 
 
@@ -155,6 +162,8 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--name',   required=True)
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
+    parser.add_argument('--model', default='small', choices=list(MODELS.keys()),
+                        help='SAM2 model variant (default: small)')
     parser.add_argument('--all-masks', action='store_true',
                         help='Save every mask as an individual PNG')
     args = parser.parse_args()
@@ -165,9 +174,9 @@ def main():
     h, w     = image_np.shape[:2]
     print(f"Input: {args.input.name} ({w}x{h})")
 
-    print("Loading SAM2 small...")
+    print(f"Loading SAM2 {args.model}...")
     t0  = time.perf_counter()
-    sam = load_model(args.device)
+    sam = load_model(args.model, args.device)
     print(f"Model loaded in {time.perf_counter() - t0:.2f}s")
 
     print("Segmenting...")
