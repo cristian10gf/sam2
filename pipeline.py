@@ -32,12 +32,14 @@ def segment(sam2, image_np: np.ndarray) -> list[dict]:
 
 def merge_centered_masks(masks: list[dict], h: int, w: int,
                          max_area_frac: float = 0.40,
-                         dilation_px: int = 100) -> dict:
+                         dilation_px: int = 160) -> dict:
     """Iterative pixel-dilation merge starting from the most centered non-background mask.
     Absorbs any candidate mask that overlaps with the dilated union segmentation.
     More accurate than bbox padding — bridges thin gaps without pulling in distant objects.
     Masks covering >max_area_frac of the frame are excluded (background).
     """
+    from scipy.ndimage import distance_transform_edt
+
     cx, cy = w / 2, h / 2
     total_px = h * w
     max_px = max_area_frac * total_px
@@ -45,13 +47,6 @@ def merge_centered_masks(masks: list[dict], h: int, w: int,
     def centroid(m):
         x, y, bw, bh = m['bbox']
         return x + bw / 2, y + bh / 2
-
-    def dilate(mask, d):
-        """Euclidean dilation by d px using circular structuring element (scipy)."""
-        from scipy.ndimage import binary_dilation
-        y, x = np.ogrid[-d:d + 1, -d:d + 1]
-        struct = (x ** 2 + y ** 2) <= d ** 2
-        return binary_dilation(mask, structure=struct)
 
     # Exclude background masks from candidates
     candidates = [m for m in masks if m['area'] < max_px]
@@ -64,15 +59,17 @@ def merge_centered_masks(masks: list[dict], h: int, w: int,
     merged_seg = seed['segmentation'].copy()
     merged_set = {id(seed)}
 
-    # Iteratively absorb masks that touch the dilated union
+    # Iteratively absorb masks within dilation_px Euclidean distance of the union.
+    # EDT (~merged_seg) = distance from each pixel to nearest True pixel in merged_seg.
+    # O(n) vs O(n*k^2) for binary_dilation — safe at large radii.
     changed = True
     while changed:
         changed = False
-        dilated = dilate(merged_seg, dilation_px)
+        dist = distance_transform_edt(~merged_seg)
         for m in candidates:
             if id(m) in merged_set:
                 continue
-            if np.any(dilated & m['segmentation']):
+            if np.any(dist[m['segmentation']] <= dilation_px):
                 merged_seg |= m['segmentation']
                 merged_set.add(id(m))
                 changed = True
