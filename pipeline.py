@@ -31,15 +31,21 @@ def load_model(model: str = 'small', device: str = 'cuda'):
     return build_sam2(cfg, ckpt, device=device)
 
 
-def segment(sam2, image_np: np.ndarray) -> list[dict]:
+def segment(sam2, image_np: np.ndarray, points_per_side: int = 32,
+            pred_iou_thresh: float = 0.88, stability_score_thresh: float = 0.95) -> list[dict]:
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-    gen = SAM2AutomaticMaskGenerator(sam2)
+    gen = SAM2AutomaticMaskGenerator(
+        sam2,
+        points_per_side=points_per_side,
+        pred_iou_thresh=pred_iou_thresh,
+        stability_score_thresh=stability_score_thresh,
+    )
     return gen.generate(image_np)
 
 
 def merge_centered_masks(masks: list[dict], h: int, w: int,
-                         max_area_frac: float = 0.40,
-                         dilation_px: int = 160) -> dict:
+                         max_area_frac: float = 0.05,
+                         dilation_px: int = 30) -> dict:
     """Iterative pixel-dilation merge starting from the most centered non-background mask.
     Absorbs any candidate mask that overlaps with the dilated union segmentation.
     More accurate than bbox padding — bridges thin gaps without pulling in distant objects.
@@ -164,6 +170,12 @@ def main():
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--model', default='small', choices=list(MODELS.keys()),
                         help='SAM2 model variant (default: small)')
+    parser.add_argument('--points-per-side', type=int, default=32,
+                        help='AMG grid density — 32=default, 64=detects thin structures (4× slower)')
+    parser.add_argument('--pred-iou-thresh', type=float, default=0.88,
+                        help='AMG predicted IoU threshold (default 0.88; lower=more masks, may include arc)')
+    parser.add_argument('--stability-score-thresh', type=float, default=0.95,
+                        help='AMG stability threshold (default 0.95; lower=more masks)')
     parser.add_argument('--all-masks', action='store_true',
                         help='Save every mask as an individual PNG')
     args = parser.parse_args()
@@ -181,7 +193,8 @@ def main():
 
     print("Segmenting...")
     t1    = time.perf_counter()
-    masks = segment(sam, image_np)
+    masks = segment(sam, image_np, args.points_per_side,
+                    args.pred_iou_thresh, args.stability_score_thresh)
     print(f"Found {len(masks)} masks in {time.perf_counter() - t1:.2f}s")
 
     # Visualization
