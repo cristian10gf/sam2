@@ -30,13 +30,70 @@ def segment(sam2, image_np: np.ndarray) -> list[dict]:
     return gen.generate(image_np)
 
 
-def most_centered_mask(masks: list[dict], h: int, w: int) -> dict:
-    """Select the mask whose centroid is closest to the image center."""
+def merge_centered_masks(masks: list[dict], h: int, w: int,
+                         max_area_frac: float = 0.40,
+                         dilation_px: int = 100) -> dict:
+    """Iterative pixel-dilation merge starting from the most centered non-background mask.
+    Absorbs any candidate mask that overlaps with the dilated union segmentation.
+    More accurate than bbox padding — bridges thin gaps without pulling in distant objects.
+    Masks covering >max_area_frac of the frame are excluded (background).
+    """
     cx, cy = w / 2, h / 2
-    def dist(m):
+    total_px = h * w
+    max_px = max_area_frac * total_px
+
+    def centroid(m):
         x, y, bw, bh = m['bbox']
-        return (x + bw / 2 - cx) ** 2 + (y + bh / 2 - cy) ** 2
-    return min(masks, key=dist)
+        return x + bw / 2, y + bh / 2
+
+    def dilate(mask, d):
+        """Euclidean dilation by d px using circular structuring element (scipy)."""
+        from scipy.ndimage import binary_dilation
+        y, x = np.ogrid[-d:d + 1, -d:d + 1]
+        struct = (x ** 2 + y ** 2) <= d ** 2
+        return binary_dilation(mask, structure=struct)
+
+    # Exclude background masks from candidates
+    candidates = [m for m in masks if m['area'] < max_px]
+    if not candidates:
+        candidates = masks
+
+    # Seed = most centered candidate
+    seed = min(candidates, key=lambda m: (centroid(m)[0] - cx) ** 2 + (centroid(m)[1] - cy) ** 2)
+
+    merged_seg = seed['segmentation'].copy()
+    merged_set = {id(seed)}
+
+    # Iteratively absorb masks that touch the dilated union
+    changed = True
+    while changed:
+        changed = False
+        dilated = dilate(merged_seg, dilation_px)
+        for m in candidates:
+            if id(m) in merged_set:
+                continue
+            if np.any(dilated & m['segmentation']):
+                merged_seg |= m['segmentation']
+                merged_set.add(id(m))
+                changed = True
+
+    rows = np.any(merged_seg, axis=1)
+    cols = np.any(merged_seg, axis=0)
+    if rows.any():
+        r0, r1 = np.where(rows)[0][[0, -1]]
+        c0, c1 = np.where(cols)[0][[0, -1]]
+        final_bbox = [int(c0), int(r0), int(c1 - c0), int(r1 - r0)]
+    else:
+        x, y, bw, bh = seed['bbox']
+        final_bbox = [x, y, bw, bh]
+
+    return {
+        'segmentation': merged_seg,
+        'area': int(merged_seg.sum()),
+        'bbox': final_bbox,
+        'predicted_iou': seed['predicted_iou'],
+        'stability_score': seed['stability_score'],
+    }
 
 
 def save_visualization(image_np, masks, output_path: Path, name: str):
@@ -125,8 +182,8 @@ def main():
     viz = save_visualization(image_np, masks, args.output, args.name)
     print(f"Visualization: {viz}")
 
-    # Most centered mask → main output for 3D pipeline
-    best = most_centered_mask(masks, h, w)
+    # Merge nearby centered masks → handles large fragmented objects
+    best = merge_centered_masks(masks, h, w)
     main_out = save_isolated(image_np, best['segmentation'], args.output, args.name)
     print(f"Main object:   {main_out}  (area={best['area']} px²)")
 
