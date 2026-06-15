@@ -178,6 +178,10 @@ def main():
                         help='AMG stability threshold (default 0.95; lower=more masks)')
     parser.add_argument('--all-masks', action='store_true',
                         help='Save every mask as an individual PNG')
+    parser.add_argument('--bbox', nargs=4, type=float, metavar=('X1', 'Y1', 'X2', 'Y2'),
+                        default=None,
+                        help='Use SAM2ImagePredictor with box prompt instead of AMG. '
+                             'Args: x1 y1 x2 y2 in pixel coords.')
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -191,32 +195,58 @@ def main():
     sam = load_model(args.model, args.device)
     print(f"Model loaded in {time.perf_counter() - t0:.2f}s")
 
-    print("Segmenting...")
-    t1    = time.perf_counter()
-    masks = segment(sam, image_np, args.points_per_side,
-                    args.pred_iou_thresh, args.stability_score_thresh)
-    print(f"Found {len(masks)} masks in {time.perf_counter() - t1:.2f}s")
+    if args.bbox is not None:
+        # ── bbox prompt mode ──────────────────────────────────────────────
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        print(f"SAM2 bbox mode: {args.bbox}")
+        predictor = SAM2ImagePredictor(sam)
+        predictor.set_image(image_np)
+        box = np.array([[args.bbox[0], args.bbox[1], args.bbox[2], args.bbox[3]]])
+        t1 = time.perf_counter()
+        masks, scores, _ = predictor.predict(box=box, multimask_output=True)
+        print(f"Predicted in {time.perf_counter() - t1:.2f}s  scores={scores.round(3)}")
+        best_mask = masks[scores.argmax()].astype(bool)
+        # Save outputs in the same format as AMG mode
+        dummy_mask = {'segmentation': best_mask,
+                      'area': int(best_mask.sum()),
+                      'bbox': args.bbox,
+                      'predicted_iou': float(scores.max()),
+                      'stability_score': float(scores.max())}
+        viz = save_visualization(image_np, [dummy_mask], args.output, args.name)
+        print(f"Visualization: {viz}")
+        main_out = save_isolated(image_np, best_mask, args.output, args.name)
+        print(f"Main object:   {main_out}  (area={best_mask.sum()} px²)")
+        segmask_out = args.output / f'{args.name}_segmask.npy'
+        np.save(str(segmask_out), best_mask.astype(np.uint8))
+        print(f"Segmask:       {segmask_out}")
+    else:
+        # ── AMG mode (existing code) ──────────────────────────────────────
+        print("Segmenting...")
+        t1    = time.perf_counter()
+        masks = segment(sam, image_np, args.points_per_side,
+                        args.pred_iou_thresh, args.stability_score_thresh)
+        print(f"Found {len(masks)} masks in {time.perf_counter() - t1:.2f}s")
 
-    # Visualization
-    viz = save_visualization(image_np, masks, args.output, args.name)
-    print(f"Visualization: {viz}")
+        # Visualization
+        viz = save_visualization(image_np, masks, args.output, args.name)
+        print(f"Visualization: {viz}")
 
-    # Merge nearby centered masks → handles large fragmented objects
-    best = merge_centered_masks(masks, h, w)
-    main_out = save_isolated(image_np, best['segmentation'], args.output, args.name)
-    print(f"Main object:   {main_out}  (area={best['area']} px²)")
+        # Merge nearby centered masks → handles large fragmented objects
+        best = merge_centered_masks(masks, h, w)
+        main_out = save_isolated(image_np, best['segmentation'], args.output, args.name)
+        print(f"Main object:   {main_out}  (area={best['area']} px²)")
 
-    # Full-size binary mask (bool, original image dimensions) for depth masking
-    segmask_out = args.output / f'{args.name}_segmask.npy'
-    np.save(str(segmask_out), best['segmentation'].astype(np.uint8))
-    print(f"Segmask:       {segmask_out}")
+        # Full-size binary mask (bool, original image dimensions) for depth masking
+        segmask_out = args.output / f'{args.name}_segmask.npy'
+        np.save(str(segmask_out), best['segmentation'].astype(np.uint8))
+        print(f"Segmask:       {segmask_out}")
 
-    # All masks individually
-    if args.all_masks:
-        ranked = sorted(masks, key=lambda x: x['area'], reverse=True)
-        for i, m in enumerate(ranked):
-            save_isolated(image_np, m['segmentation'], args.output, f'{args.name}_mask{i:02d}')
-        print(f"Saved {len(masks)} individual masks")
+        # All masks individually
+        if args.all_masks:
+            ranked = sorted(masks, key=lambda x: x['area'], reverse=True)
+            for i, m in enumerate(ranked):
+                save_isolated(image_np, m['segmentation'], args.output, f'{args.name}_mask{i:02d}')
+            print(f"Saved {len(masks)} individual masks")
 
     print(f"\nDone — outputs in {args.output}")
 
