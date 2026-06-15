@@ -57,6 +57,7 @@ COPY --from=builder /workspace/sam2/configs /opt/conda/lib/python3.11/site-packa
 # but include a copy here for standalone use without volume mount
 COPY pipeline.py ./
 COPY pipeline_interactive.py ./
+COPY pipeline_yolo_sam2.py ./
 
 # Checkpoints mounted from host: -v ~/models/sam2:/opt/sam2/checkpoints:ro
 ENV SAM2_REPO_ROOT=/opt/sam2
