@@ -1,20 +1,78 @@
 """
-Runs inside the Docker container (x86 or Jetson).
-Segments the most prominent object in an image using SAM2 small (default params).
-Outputs a visualization + per-mask PNGs with white background, ready for TripoSR/TRELLIS.
+SAM2 segmentation pipeline. Auto-relaunches inside Docker when run from the host.
 
-Usage:
-  python pipeline.py --input /input/image.png --output /output --name mug
+Usage (host — auto Docker):
+  python3 submodules/sam2/pipeline.py --input data/images/taladro.JPG --output data/outputs --name taladro
+
+Usage (inside container directly):
+  python3 /opt/sam2/pipeline.py --input /input/image.png --output /output --name mug
 """
 import argparse
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
+IN_DOCKER = Path('/.dockerenv').exists()
+
+if IN_DOCKER:
+    sys.path.insert(0, '/opt/sam2')
+
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, '/opt/sam2')
+
+DOCKER_IMAGE   = 'sam2:x86'
+CKPTS_DIR_HOST = Path.home() / 'models' / 'sam2'
+SCRIPT_HOST    = Path(__file__).resolve()
+
+
+def _relaunch_in_docker(args_raw: list[str]) -> None:
+    """Re-exec this script inside the sam2:x86 Docker container, forwarding all args."""
+    input_path  = None
+    output_path = None
+    for i, a in enumerate(args_raw):
+        if a in ('--input',  '-input')  and i + 1 < len(args_raw):
+            input_path  = Path(args_raw[i + 1]).resolve()
+        if a in ('--output', '-output') and i + 1 < len(args_raw):
+            output_path = Path(args_raw[i + 1]).resolve()
+
+    if input_path is None or output_path is None:
+        print('pipeline.py: --input and --output required', file=sys.stderr)
+        sys.exit(1)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Forward every arg, replacing host paths with container paths
+    forwarded = []
+    i = 0
+    while i < len(args_raw):
+        a = args_raw[i]
+        if a in ('--input', '-input') and i + 1 < len(args_raw):
+            forwarded += ['--input', f'/input/{Path(args_raw[i+1]).name}']
+            i += 2
+        elif a in ('--output', '-output') and i + 1 < len(args_raw):
+            forwarded += ['--output', '/output']
+            i += 2
+        else:
+            forwarded.append(a)
+            i += 1
+
+    cmd = [
+        'docker', 'run', '--rm',
+        '--gpus', 'all',
+        '-v', f'{input_path.parent}:/input:ro',
+        '-v', f'{output_path}:/output',
+        '-v', f'{CKPTS_DIR_HOST}:/opt/sam2/checkpoints:ro',
+        '-v', f'{SCRIPT_HOST}:/opt/sam2/pipeline.py:ro',
+        '--entrypoint', 'python3',
+        DOCKER_IMAGE,
+        '/opt/sam2/pipeline.py',
+    ] + forwarded
+
+    print(f'Launching Docker: {" ".join(cmd)}')
+    sys.exit(subprocess.run(cmd).returncode)
 
 
 MODELS = {
@@ -163,6 +221,9 @@ def save_isolated(image_np, mask_bool, output_path: Path, suffix: str) -> Path:
 
 
 def main():
+    if not IN_DOCKER:
+        _relaunch_in_docker(sys.argv[1:])
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--input',  required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
