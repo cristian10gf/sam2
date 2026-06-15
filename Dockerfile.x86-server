@@ -56,6 +56,7 @@ COPY --from=builder /workspace/sam2/configs /opt/conda/lib/python3.11/site-packa
 # pipeline.py is mounted at runtime by orchestrators (tools/pipeline.py, tools/run_numcc.py)
 # but include a copy here for standalone use without volume mount
 COPY pipeline.py ./
+COPY pipeline_interactive.py ./
 
 # Checkpoints mounted from host: -v ~/models/sam2:/opt/sam2/checkpoints:ro
 ENV SAM2_REPO_ROOT=/opt/sam2
