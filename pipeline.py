@@ -44,7 +44,7 @@ def segment(sam2, image_np: np.ndarray, points_per_side: int = 32,
 
 
 def merge_centered_masks(masks: list[dict], h: int, w: int,
-                         max_area_frac: float = 0.05,
+                         max_area_frac: float = 0.30,
                          dilation_px: int = 30) -> dict:
     """Iterative pixel-dilation merge starting from the most centered non-background mask.
     Absorbs any candidate mask that overlaps with the dilated union segmentation.
@@ -178,6 +178,8 @@ def main():
                         help='AMG stability threshold (default 0.95; lower=more masks)')
     parser.add_argument('--all-masks', action='store_true',
                         help='Save every mask as an individual PNG')
+    parser.add_argument('--max-area-frac', type=float, default=0.30,
+                        help='Max fraction of frame area for seed mask — larger masks treated as background (default 0.30)')
     parser.add_argument('--bbox', nargs=4, type=float, metavar=('X1', 'Y1', 'X2', 'Y2'),
                         default=None,
                         help='Use SAM2ImagePredictor with box prompt instead of AMG. '
@@ -232,7 +234,7 @@ def main():
         print(f"Visualization: {viz}")
 
         # Merge nearby centered masks → handles large fragmented objects
-        best = merge_centered_masks(masks, h, w)
+        best = merge_centered_masks(masks, h, w, max_area_frac=args.max_area_frac)
         main_out = save_isolated(image_np, best['segmentation'], args.output, args.name)
         print(f"Main object:   {main_out}  (area={best['area']} px²)")
 
