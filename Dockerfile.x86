@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir .
 
 # Runtime inference deps
 RUN pip install --no-cache-dir \
-        opencv-python-headless numpy pillow matplotlib && \
+        opencv-python-headless numpy pillow matplotlib ultralytics && \
     rm -rf /root/.cache/pip /tmp/pip-*
 
 # ══════════════════════════════════════════════════════════════════════════════
