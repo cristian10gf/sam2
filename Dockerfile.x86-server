@@ -43,7 +43,7 @@ WORKDIR /opt/sam2
 
 # Only GL libs needed — no build tools, no ffmpeg dev headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
+        libgl1 libglib2.0-0 python3-tk \
     && rm -rf /var/lib/apt/lists/*
 
 # Full Python env from builder — includes installed sam2 package + compiled _C.so
