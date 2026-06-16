@@ -136,8 +136,12 @@ def run_yolo(image_np: np.ndarray, model_name: str, conf: float,
     from ultralytics import YOLO
     model_path = Path('/opt/yolo') / model_name
     if not model_path.exists():
-        # ultralytics downloads to YOLO_CONFIG_DIR on first use
-        model_path = model_name
+        # Download to cache dir so it persists across runs via the host volume mount.
+        import urllib.request
+        url = f'https://github.com/ultralytics/assets/releases/download/v8.4.0/{model_name}'
+        print(f'Downloading {model_name} → {model_path}')
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(url, model_path)
     model = YOLO(str(model_path))
 
     results = model(image_np, conf=conf, device=device, verbose=False)
