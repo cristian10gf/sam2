@@ -109,6 +109,10 @@ def parse_args():
                         help='YOLOv11 model variant (default: yolo11n.pt)')
     parser.add_argument('--conf',       type=float, default=0.25,
                         help='YOLO confidence threshold (default 0.25)')
+    parser.add_argument('--fill-holes', action='store_true',
+                        help='Fill enclosed cavities in mask (500-20K px²). '
+                             'Use for objects with hollow surfaces (e.g. earpad interiors). '
+                             'Avoid for objects with intentional holes (e.g. cup handle).')
 
     # Object selection — mutually exclusive
     group = parser.add_mutually_exclusive_group(required=True)
@@ -209,7 +213,7 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
 
 
 def run_sam2(image_np: np.ndarray, bbox: list[float],
-             sam2_model: str, device: str) -> np.ndarray:
+             sam2_model: str, device: str, fill_holes: bool = False) -> np.ndarray:
     """Run SAM2ImagePredictor with bbox prompt. Returns bool mask (H, W)."""
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -221,8 +225,22 @@ def run_sam2(image_np: np.ndarray, bbox: list[float],
 
     box = np.array([[bbox[0], bbox[1], bbox[2], bbox[3]]])
     masks, scores, _ = predictor.predict(box=box, multimask_output=True)
-    # masks: (3, H, W) bool; scores: (3,)
-    return masks[scores.argmax()].astype(bool)
+    mask = masks[scores.argmax()].astype(bool)
+
+    if fill_holes:
+        # Fill enclosed holes in 500-20K px² band: targets hollow surfaces like
+        # earpad interiors. Skips large open spaces (>20K) and noise (<500).
+        # Do NOT use for objects with intentional holes (cup handle, etc.).
+        from scipy.ndimage import label, binary_fill_holes
+        filled_all = binary_fill_holes(mask)
+        holes = filled_all & ~mask
+        hole_labeled, n_holes = label(holes)
+        for i in range(1, n_holes + 1):
+            hole = hole_labeled == i
+            if 500 <= hole.sum() <= 20_000:
+                mask |= hole
+
+    return mask
 
 
 def save_outputs(image_np: np.ndarray, mask: np.ndarray,
@@ -318,7 +336,7 @@ def main():
     bbox = selected['bbox']
 
     print(f'Running SAM2 ({args.sam2_model}) with bbox {[round(v) for v in bbox]}...')
-    mask = run_sam2(image_np, bbox, args.sam2_model, args.device)
+    mask = run_sam2(image_np, bbox, args.sam2_model, args.device, fill_holes=args.fill_holes)
     print(f'Mask computed: {mask.sum():,} px²')
 
     save_outputs(image_np, mask, args.output, args.name, selected, bbox)
