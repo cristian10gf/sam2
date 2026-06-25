@@ -172,18 +172,28 @@ def run_yolo(image_np: np.ndarray, model_name: str, conf: float,
 
 
 def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> dict | None:
-    """Show image with all YOLO bboxes. User clicks inside one to select it."""
+    """Show image with all YOLO bboxes. User clicks inside one to select it.
+
+    If the user clicks outside every detected bounding box (e.g. on an object
+    that YOLO missed), a fallback bbox of DEFAULT_POINT_BOX_SIZE px is created
+    centred on the click and returned as a synthetic detection so SAM2 can still
+    segment that object.
+    """
     import matplotlib
     matplotlib.use('TkAgg')
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
 
-    if not detections:
-        return None
+    image_h, image_w = image_np.shape[:2]
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(image_np)
-    ax.set_title('Click inside the bounding box of the object you want to segment.\nQ = quit')
+    if detections:
+        ax.set_title(
+            'Click inside a bounding box — or anywhere on an undetected object.\nQ = quit'
+        )
+    else:
+        ax.set_title('No YOLO detections. Click anywhere on the object to segment.\nQ = quit')
     ax.axis('off')
 
     colors = plt.cm.Set1.colors
@@ -202,6 +212,7 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
         if event.inaxes is not ax or event.xdata is None:
             return
         px, py = event.xdata, event.ydata
+        # Prefer clicking inside a detected box.
         for d in detections:
             x1, y1, x2, y2 = d['bbox']
             if x1 <= px <= x2 and y1 <= py <= y2:
@@ -209,6 +220,17 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
                 print(f"Selected: {d['class_name']} conf={d['conf']:.2f} bbox={[round(v) for v in d['bbox']]}")
                 plt.close(fig)
                 return
+        # Fallback: click outside all boxes → synthetic bbox centred on click.
+        half = DEFAULT_POINT_BOX_SIZE // 2
+        fb = [
+            float(max(0, int(px) - half)),
+            float(max(0, int(py) - half)),
+            float(min(image_w, int(px) + half)),
+            float(min(image_h, int(py) + half)),
+        ]
+        selected[0] = {'bbox': fb, 'conf': 0.0, 'class_id': -1, 'class_name': 'manual_click'}
+        print(f"No YOLO box at click ({int(px)}, {int(py)}); using fallback bbox {[round(v) for v in fb]}")
+        plt.close(fig)
 
     def on_key(event):
         if event.key == 'q':
@@ -223,19 +245,26 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
 
 def pick_detection_by_point(detections: list[dict], u: float, v: float,
                              image_w: int, image_h: int) -> list[float]:
-    """Return bbox of nearest YOLO detection to pixel (u, v).
+    """Return the YOLO detection bbox that best covers pixel (u, v).
 
-    Falls back to a fixed square centred on (u, v) when detections is empty.
+    Selection order:
+      1. Detections whose bbox *contains* (u, v) — smallest area wins (tightest
+         fit avoids large background boxes, e.g. a bin surface covering most of
+         the frame whose centre happens to be near the projected centroid).
+      2. Fixed square centred on (u, v) — used when no detection contains the
+         point or when detections is empty.  Nearest-centre fallback is
+         intentionally avoided: a large background bbox can have its centre
+         arbitrarily close to the projected object centroid.
     """
-    if detections:
-        best = min(
-            detections,
-            key=lambda d: (
-                ((d['bbox'][0] + d['bbox'][2]) / 2 - u) ** 2 +
-                ((d['bbox'][1] + d['bbox'][3]) / 2 - v) ** 2
-            ),
-        )
-        return best['bbox']
+    containing = [d for d in detections if (
+        d['bbox'][0] <= u <= d['bbox'][2] and
+        d['bbox'][1] <= v <= d['bbox'][3]
+    )]
+    if containing:
+        return min(
+            containing,
+            key=lambda d: (d['bbox'][2] - d['bbox'][0]) * (d['bbox'][3] - d['bbox'][1]),
+        )['bbox']
 
     half = DEFAULT_POINT_BOX_SIZE // 2
     x1 = max(0, int(u) - half)
@@ -346,7 +375,7 @@ def main():
         device=args.device,
     )
 
-    if not detections and not args.point:
+    if not detections and not args.point and not args.interactive:
         filter_desc = (f'class_name={args.class_name}' if args.class_name else
                        f'class_id={args.class_id}'   if args.class_id   else 'any class')
         print(f'ERROR: No YOLO detections found ({filter_desc}, conf>={args.conf})', file=sys.stderr)
