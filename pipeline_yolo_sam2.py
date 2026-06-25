@@ -241,28 +241,36 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
     return selected[0]
 
 
+MAX_BBOX_AREA_FRACTION = 0.20  # discard YOLO boxes covering >20 % of the image
+
 def pick_detection_by_point(detections: list[dict], u: float, v: float,
                              image_w: int, image_h: int) -> list[float]:
     """Return the YOLO detection bbox that best covers pixel (u, v).
 
     Selection order:
-      1. Detections whose bbox *contains* (u, v) — smallest area wins (tightest
-         fit avoids large background boxes, e.g. a bin surface covering most of
-         the frame whose centre happens to be near the projected centroid).
-      2. Fixed square centred on (u, v) — used when no detection contains the
-         point or when detections is empty.  Nearest-centre fallback is
-         intentionally avoided: a large background bbox can have its centre
-         arbitrarily close to the projected object centroid.
+      1. Detections whose bbox *contains* (u, v) AND whose area is below
+         MAX_BBOX_AREA_FRACTION of the full image — smallest area wins.
+         Large background detections (bin walls, floor) are excluded so SAM2
+         is not given a near-full-frame prompt that causes it to segment the
+         background instead of the target object.
+      2. Fixed square centred on (u, v) — used when no qualifying detection
+         exists or when detections is empty.
     """
-    containing = [d for d in detections if (
-        d['bbox'][0] <= u <= d['bbox'][2] and
-        d['bbox'][1] <= v <= d['bbox'][3]
-    )]
+    image_area = image_w * image_h
+    max_area = MAX_BBOX_AREA_FRACTION * image_area
+
+    containing = [
+        d for d in detections
+        if (d['bbox'][0] <= u <= d['bbox'][2] and
+            d['bbox'][1] <= v <= d['bbox'][3] and
+            (d['bbox'][2] - d['bbox'][0]) * (d['bbox'][3] - d['bbox'][1]) <= max_area)
+    ]
     if containing:
-        return min(
+        best = min(
             containing,
             key=lambda d: (d['bbox'][2] - d['bbox'][0]) * (d['bbox'][3] - d['bbox'][1]),
-        )['bbox']
+        )
+        return best['bbox']
 
     half = DEFAULT_POINT_BOX_SIZE // 2
     x1 = max(0, int(u) - half)
