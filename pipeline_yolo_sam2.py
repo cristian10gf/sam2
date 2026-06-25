@@ -203,8 +203,6 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
         rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1,
                                   linewidth=2, edgecolor=color, facecolor='none')
         ax.add_patch(rect)
-        ax.text(x1, y1 - 5, f"{i}: {d['class_name']} {d['conf']:.2f}",
-                color=color, fontsize=9, backgroundcolor='black')
 
     selected = [None]
 
