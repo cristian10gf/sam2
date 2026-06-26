@@ -173,56 +173,108 @@ def run_yolo(image_np: np.ndarray, model_name: str, conf: float,
     return detections
 
 
-def pick_detection_interactive(image_np: np.ndarray, detections: list[dict], window_title: str = "") -> dict | None:
+def pick_detection_interactive(
+    image_np: np.ndarray,
+    detections: list[dict],
+    window_title: str = "",
+    image_filtered: np.ndarray | None = None,
+    detections_filtered: list[dict] | None = None,
+) -> dict | None:
     """Show image with all YOLO bboxes. User clicks inside one to select it.
 
     If the user clicks outside every detected bounding box (e.g. on an object
     that YOLO missed), a fallback bbox of DEFAULT_POINT_BOX_SIZE px is created
     centred on the click and returned as a synthetic detection so SAM2 can still
     segment that object.
+
+    A "Filter" button toggles to a pre-computed enhanced image (contrast×2.5 +
+    saturation×1.5) and its own YOLO detections, to help spot low-contrast objects.
+    SAM2 always receives the original unfiltered image regardless of toggle state.
     """
     import matplotlib
     matplotlib.use('TkAgg')
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
+    from matplotlib.widgets import Button
+
+    if image_filtered is None:
+        image_filtered = image_np
+    if detections_filtered is None:
+        detections_filtered = detections
+
+    filter_on = [False]
+    # current_* tracks what is active (image + detections)
+    current_image = [image_np]
+    current_dets  = [detections]
 
     image_h, image_w = image_np.shape[:2]
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig = plt.figure(figsize=(10, 8.5))
+    ax = fig.add_axes([0.0, 0.09, 1.0, 0.91])
+
     if window_title:
         fig.canvas.manager.set_window_title(window_title)
-    ax.imshow(image_np)
-    if detections:
-        ax.set_title(
-            'Click inside a bounding box — or anywhere on an undetected object.\nQ = quit'
-        )
-    else:
-        ax.set_title('No YOLO detections. Click anywhere on the object to segment.\nQ = quit')
+
+    im = ax.imshow(image_np)
     ax.axis('off')
 
     colors = plt.cm.Set1.colors
-    for i, d in enumerate(detections):
-        x1, y1, x2, y2 = d['bbox']
-        color = colors[i % len(colors)]
-        rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1,
-                                  linewidth=2, edgecolor=color, facecolor='none')
-        ax.add_patch(rect)
+    bbox_patches = []
+
+    def _draw_bboxes(dets):
+        for p in bbox_patches:
+            p.remove()
+        bbox_patches.clear()
+        for i, d in enumerate(dets):
+            x1, y1, x2, y2 = d['bbox']
+            color = colors[i % len(colors)]
+            rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1,
+                                      linewidth=2, edgecolor=color, facecolor='none')
+            ax.add_patch(rect)
+            bbox_patches.append(rect)
+
+    def _update_title(dets):
+        if dets:
+            ax.set_title('Click inside a bounding box — or anywhere on an undetected object.\nQ = quit')
+        else:
+            ax.set_title('No YOLO detections. Click anywhere on the object to segment.\nQ = quit')
+
+    _draw_bboxes(detections)
+    _update_title(detections)
+
+    ax_btn = fig.add_axes([0.35, 0.01, 0.30, 0.06])
+    btn = Button(ax_btn, 'Filter: OFF', color='0.85', hovercolor='0.75')
 
     selected = [None]
+
+    def on_filter(_event):
+        filter_on[0] = not filter_on[0]
+        if filter_on[0]:
+            current_image[0] = image_filtered
+            current_dets[0]  = detections_filtered
+        else:
+            current_image[0] = image_np
+            current_dets[0]  = detections
+        im.set_data(current_image[0])
+        _draw_bboxes(current_dets[0])
+        _update_title(current_dets[0])
+        btn.label.set_text('Filter: ON' if filter_on[0] else 'Filter: OFF')
+        btn.color = '0.6' if filter_on[0] else '0.85'
+        fig.canvas.draw_idle()
+
+    btn.on_clicked(on_filter)
 
     def on_click(event):
         if event.inaxes is not ax or event.xdata is None:
             return
         px, py = event.xdata, event.ydata
-        # Prefer clicking inside a detected box.
-        for d in detections:
+        for d in current_dets[0]:
             x1, y1, x2, y2 = d['bbox']
             if x1 <= px <= x2 and y1 <= py <= y2:
                 selected[0] = d
                 print(f"Selected: {d['class_name']} conf={d['conf']:.2f} bbox={[round(v) for v in d['bbox']]}")
                 plt.close(fig)
                 return
-        # Fallback: click outside all boxes → synthetic bbox centred on click.
         half = DEFAULT_POINT_BOX_SIZE // 2
         fb = [
             float(max(0, int(px) - half)),
@@ -240,7 +292,6 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict], win
 
     fig.canvas.mpl_connect('button_press_event', on_click)
     fig.canvas.mpl_connect('key_press_event', on_key)
-    plt.tight_layout()
     plt.show()
     return selected[0]
 
@@ -397,7 +448,25 @@ def main():
         if not os.environ.get('DISPLAY'):
             print('ERROR: --interactive requires $DISPLAY (X11)', file=sys.stderr)
             sys.exit(1)
-        selected_meta = pick_detection_interactive(image_np, detections, window_title=getattr(args, 'window_title', ''))
+        # Pre-compute filtered image + its YOLO detections for the toggle button
+        from PIL import ImageEnhance as _IE
+        _pil = Image.fromarray(image_np)
+        _pil = _IE.Contrast(_pil).enhance(2.5)
+        _pil = _IE.Color(_pil).enhance(1.5)
+        image_filtered = np.array(_pil)
+        detections_filtered = run_yolo(
+            image_filtered, args.yolo_model, args.conf,
+            class_name=args.class_name,
+            class_id=args.class_id,
+            any_class=args.any_class,
+            device=args.device,
+        )
+        selected_meta = pick_detection_interactive(
+            image_np, detections,
+            window_title=getattr(args, 'window_title', ''),
+            image_filtered=image_filtered,
+            detections_filtered=detections_filtered,
+        )
         if selected_meta is None:
             print('No detection selected. Exiting.')
             sys.exit(1)
