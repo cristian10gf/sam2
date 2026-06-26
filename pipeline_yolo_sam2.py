@@ -264,17 +264,48 @@ def pick_detection_interactive(
 
     btn.on_clicked(on_filter)
 
+    def _try_select(px, py, dets):
+        """Return detection if (px,py) falls inside one of dets, else None."""
+        for d in dets:
+            x1, y1, x2, y2 = d['bbox']
+            if x1 <= px <= x2 and y1 <= py <= y2:
+                return d
+        return None
+
     def on_click(event):
         if event.inaxes is not ax or event.xdata is None:
             return
         px, py = event.xdata, event.ydata
-        for d in current_dets[0]:
-            x1, y1, x2, y2 = d['bbox']
-            if x1 <= px <= x2 and y1 <= py <= y2:
-                selected[0] = d
-                print(f"Selected: {d['class_name']} conf={d['conf']:.2f} bbox={[round(v) for v in d['bbox']]}")
+
+        # Try current detections first
+        hit = _try_select(px, py, current_dets[0])
+        if hit:
+            selected[0] = hit
+            print(f"Selected: {hit['class_name']} conf={hit['conf']:.2f} bbox={[round(v) for v in hit['bbox']]}")
+            plt.close(fig)
+            return
+
+        # Miss on original image → auto-switch to filtered and retry
+        if not filter_on[0]:
+            filter_on[0] = True
+            current_image[0] = image_filtered
+            current_dets[0]  = detections_filtered
+            im.set_data(image_filtered)
+            _draw_bboxes(detections_filtered)
+            _update_title(detections_filtered)
+            btn.label.set_text('Filter: ON')
+            btn.color = '0.6'
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+
+            hit = _try_select(px, py, detections_filtered)
+            if hit:
+                selected[0] = hit
+                print(f"Auto-filter selected: {hit['class_name']} conf={hit['conf']:.2f} bbox={[round(v) for v in hit['bbox']]}")
                 plt.close(fig)
                 return
+
+        # Still no match → fallback synthetic bbox
         half = DEFAULT_POINT_BOX_SIZE // 2
         fb = [
             float(max(0, int(px) - half)),
