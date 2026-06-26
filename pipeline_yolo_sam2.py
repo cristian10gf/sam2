@@ -103,9 +103,11 @@ def _relaunch_in_docker(args_raw: list[str]) -> None:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='YOLO + SAM2 segmentation pipeline')
-    parser.add_argument('--input',      required=True, type=Path)
-    parser.add_argument('--output',     required=True, type=Path)
-    parser.add_argument('--name',       required=True)
+    parser.add_argument('--input',        required=True, type=Path)
+    parser.add_argument('--output',       required=True, type=Path)
+    parser.add_argument('--name',         required=True)
+    parser.add_argument('--window-title', default='', dest='window_title',
+                        help='Title shown in the interactive selection window.')
     parser.add_argument('--sam2-model', default='small', choices=list(SAM2_MODELS.keys()))
     parser.add_argument('--device',     default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--yolo-model', default=YOLO_MODEL,
@@ -171,7 +173,7 @@ def run_yolo(image_np: np.ndarray, model_name: str, conf: float,
     return detections
 
 
-def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> dict | None:
+def pick_detection_interactive(image_np: np.ndarray, detections: list[dict], window_title: str = "") -> dict | None:
     """Show image with all YOLO bboxes. User clicks inside one to select it.
 
     If the user clicks outside every detected bounding box (e.g. on an object
@@ -187,6 +189,8 @@ def pick_detection_interactive(image_np: np.ndarray, detections: list[dict]) -> 
     image_h, image_w = image_np.shape[:2]
 
     fig, ax = plt.subplots(figsize=(10, 8))
+    if window_title:
+        fig.canvas.manager.set_window_title(window_title)
     ax.imshow(image_np)
     if detections:
         ax.set_title(
@@ -393,7 +397,7 @@ def main():
         if not os.environ.get('DISPLAY'):
             print('ERROR: --interactive requires $DISPLAY (X11)', file=sys.stderr)
             sys.exit(1)
-        selected_meta = pick_detection_interactive(image_np, detections)
+        selected_meta = pick_detection_interactive(image_np, detections, window_title=getattr(args, 'window_title', ''))
         if selected_meta is None:
             print('No detection selected. Exiting.')
             sys.exit(1)
