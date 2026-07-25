@@ -328,6 +328,9 @@ def pick_detection_interactive(
 
 
 MAX_BBOX_AREA_FRACTION = 0.20  # discard YOLO boxes covering >20 % of the image
+MIN_MASK_COVERAGE = 0.0005   # 0.05 % — masks below this fraction trigger closest-center retry
+# Lowered from 0.5% (0.005): the 16mm YCB dice viewed overhead from ~0.55m covers only ~0.09%
+# of the image, which is a correct segmentation — not a corner-clipping case that needs retry.
 
 def pick_detection_by_point(detections: list[dict], u: float, v: float,
                              image_w: int, image_h: int) -> list[float]:
@@ -364,6 +367,37 @@ def pick_detection_by_point(detections: list[dict], u: float, v: float,
     x2 = min(image_w, int(u) + half)
     y2 = min(image_h, int(v) + half)
     return [float(x1), float(y1), float(x2), float(y2)]
+
+
+def pick_detection_by_closest_center(
+    detections: list[dict], u: float, v: float,
+    image_w: int, image_h: int,
+    min_area_px: int = 1000,
+) -> list[float] | None:
+    """Return the bbox of the detection whose center is closest to (u, v).
+
+    Qualifies detections with area in [min_area_px, MAX_BBOX_AREA_FRACTION * image_area].
+    Returns None if no qualifying detection exists.
+    Used as a fallback when the point-prompt mask is suspiciously small.
+    """
+    image_area = image_w * image_h
+    max_area = MAX_BBOX_AREA_FRACTION * image_area
+
+    qualifying = [
+        d for d in detections
+        if min_area_px
+        <= (d['bbox'][2] - d['bbox'][0]) * (d['bbox'][3] - d['bbox'][1])
+        <= max_area
+    ]
+    if not qualifying:
+        return None
+
+    def _center_dist_sq(d: dict) -> float:
+        cx = (d['bbox'][0] + d['bbox'][2]) / 2.0
+        cy = (d['bbox'][1] + d['bbox'][3]) / 2.0
+        return (cx - u) ** 2 + (cy - v) ** 2
+
+    return min(qualifying, key=_center_dist_sq)['bbox']
 
 
 def run_sam2(image_np: np.ndarray, bbox: list[float],
@@ -512,6 +546,7 @@ def main():
         print(f'Point prompt ({pu:.1f},{pv:.1f}) → bbox {[round(b) for b in bbox]}')
         selected_meta = {'class_name': 'point_prompt', 'conf': 1.0, 'bbox': bbox}
     else:
+        pu = pv = None
         selected_meta = detections[0]
         print(f'Detected: {selected_meta["class_name"]} conf={selected_meta["conf"]:.2f} bbox={[round(v) for v in selected_meta["bbox"]]}')
         bbox = selected_meta['bbox']
@@ -519,6 +554,22 @@ def main():
     print(f'Running SAM2 ({args.sam2_model}) with bbox {[round(b) for b in bbox]}...')
     mask = run_sam2(image_np, bbox, args.sam2_model, args.device, fill_holes=args.fill_holes)
     print(f'Mask computed: {mask.sum():,} px²')
+
+    # Guard: if mask coverage is too small and we used a point prompt, retry by picking
+    # the detection whose center is closest to the centroid projection rather than the
+    # one that merely contains the projection point (which may be a tiny partial view).
+    if args.point and mask.mean() < MIN_MASK_COVERAGE and detections:
+        retry_bbox = pick_detection_by_closest_center(detections, pu, pv, w, h)
+        if retry_bbox is not None and retry_bbox != bbox:
+            print(
+                f'[Guard] Mask coverage {mask.mean() * 100:.2f}% < '
+                f'{MIN_MASK_COVERAGE * 100:.1f}% — retrying with closest-center '
+                f'detection: {[round(b) for b in retry_bbox]}'
+            )
+            mask = run_sam2(image_np, retry_bbox, args.sam2_model, args.device, fill_holes=args.fill_holes)
+            print(f'Retry mask: {mask.sum():,} px²')
+            bbox = retry_bbox
+            selected_meta = {'class_name': 'closest_center_retry', 'conf': 1.0, 'bbox': retry_bbox}
 
     save_outputs(image_np, mask, args.output, args.name, selected_meta, bbox)
     print(f'\nDone — outputs in {args.output}')
